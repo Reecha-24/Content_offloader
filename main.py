@@ -2,7 +2,7 @@
 import os
 from typing import TypedDict,List,Optional,Literal
 from langgraph.graph import StateGraph,START,END
-from langgraph.types import Interrupt,Command
+from langgraph.types import interrupt,Command
 from langchain.agents import create_agent
 from langchain.tools import tool
 from pydantic import BaseModel,Field
@@ -87,7 +87,7 @@ def writer(state:ContentState):
     if state.get("editor_feedback"):
         writer_prompt+=f"Please consider this editor feedback strictly : {state['editor_feedback']}"
     if state.get("human_approval") and state.get("human_approval").get("human_feedback"):
-        writer_prompt+=f"Please consider this human feedback strictly : {state['human_feedback']}"
+        writer_prompt+=f"Please consider this human feedback strictly : {state.get("human_approval").get("human_feedback")}"
     response=llm.invoke(writer_prompt)
     print(f"markdown: {response}")
     return {"markdown_content": response.content,"writer_iterations":iteration}
@@ -120,14 +120,14 @@ def seo(state:ContentState):
     return {"seo":response}
 
 def human_approval(state:ContentState)->Command[Literal["writer","finalizer"]]:
-    decision=Interrupt({
+    decision=interrupt({
         "approval":"Y/N",
         "markdown content":state.get("markdown_content")
     },
     response_schema=HumanApproval 
     )
     print(f"descision: {decision}")
-    if decision.human_approval or state.get("writer_iterations")>=MAX_ITER:
+    if decision.get('human_approved') or state.get("writer_iterations")>=MAX_ITER:
         return Command(
             update={"human_approval":decision},
             goto="finalizer"
@@ -178,11 +178,33 @@ builder.add_edge("finalizer","publish")
 builder.add_edge("publish",END)
 
 content_graph=builder.compile(checkpointer=InMemorySaver())
+# png_bytes = content_graph.get_graph().draw_mermaid_png()
+
+# with open("content_graph.png", "wb") as f:
+#     f.write(png_bytes)
 
 def main():
-    config={"configurable":{"thread_id":"001"}}
-    
-    content_graph.invoke({"topic":"langgraph and langchain"},config=config)
+    config = {"configurable": {"thread_id": "001"}}
+    content_graph.invoke({"topic": "langgraph and langchain"}, config=config)
+
+    while True:
+        snapshot = content_graph.get_state(config)
+        if not snapshot.next:          # nothing pending -> graph finished
+            break
+
+        payload = snapshot.tasks[0].interrupts[0].value
+        print("\n" + "=" * 60)
+        print(payload["markdown content"])
+        print("=" * 60)
+
+        answer = input(f"{payload['approval']} ").strip().lower()
+        approved = answer in ("y", "yes")
+        feedback = None if approved else (input("Feedback for the writer: ").strip() or None)
+
+        content_graph.invoke(
+            Command(resume={"human_approved": approved, "human_feedback": feedback}),
+            config=config,
+        )
 
 if __name__ == "__main__":
     main()
