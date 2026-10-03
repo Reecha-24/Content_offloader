@@ -1,4 +1,5 @@
 import os
+import asyncio
 from typing import TypedDict, List, Optional, Literal
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import interrupt, Command
@@ -16,6 +17,11 @@ from presidio_analyzer import AnalyzerEngine
 from presidio_anonymizer import AnonymizerEngine
 from presidio_analyzer.nlp_engine import SpacyNlpEngine
 from presidio_anonymizer.entities import OperatorConfig
+# from langchain_mcp_adapters.client import MultiServerMCPClient
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
+from langchain_mcp_adapters.tools import load_mcp_tools
 
 load_dotenv()
 oa=OpenAI()
@@ -23,6 +29,32 @@ MAX_ITER = int(os.getenv("MAX_ITERATIONS", 3))
 
 langsmith_client = Client()
 
+
+server_params = StdioServerParameters(
+    command="uv",
+    args=[
+        "--directory",
+        r"C:\\Users\\REECHA\\OneDrive\\Desktop\\mcp_server",
+        "run",
+        "main.py",
+    ],
+)
+
+# mcp_client = MultiServerMCPClient({
+#     "content_mcp": {
+#         "transport": "stdio",
+#         "command": "uv",
+#         "args": [
+#             "--directory",
+#             r"C:\\Users\\REECHA\\OneDrive\\Desktop\\mcp_server",
+#             "run",
+#             "main.py",
+#         ],
+#     }
+# })
+
+# async def get_mcp_tools():
+#     return await mcp_client.get_tools()
 
 class Plan(TypedDict):
     tasks: List[str]
@@ -203,29 +235,38 @@ def initial_route_to_end(state:ContentState)->Literal["researcher","__end__"]:
     return state.get("initial_route")
 
 
-@tool
-def doc_search(topic: str):
-    """web search tool to search content"""
-    return "I have issues "
+# @tool
+# def doc_search(topic: str):
+#     """web search tool to search content"""
+#     return "I have issues "
 
 
-def researcher(state: ContentState):
-    prompt = "You are a helpful research agent."
-    research_agent = create_agent(
-        model="openai:gpt-5.5", tools=[doc_search], system_prompt=prompt
-    )
-    response = research_agent.invoke(
-        {
-            "messages": [
-                (
-                    "human",
-                    f"Please give me a short research note about the topic : {state["topic"]}",
-                )
-            ]
-        }
-    )
-    print(f"researcher: {response}")
-    return {"research_notes": response["messages"][-1].text}
+async def researcher(state: ContentState):
+    async with stdio_client(server_params) as (read, write):
+        async with ClientSession(read, write) as session:
+            # Initialize the connection
+            await session.initialize()
+
+            # Get tools
+            tools = await load_mcp_tools(session)
+            print(f"Tools : {tools}")
+            prompt = "You are a helpful research agent.Always use available tools"
+            # tools=get_mcp_tools()
+            research_agent = create_agent(
+                model="openai:gpt-5.5", tools=tools, system_prompt=prompt
+            )
+            response =await  research_agent.ainvoke(
+                {
+                    "messages": [
+                        (
+                            "human",
+                            f"Please give me a short research note about the topic : {state["topic"]}",
+                        )
+                    ]
+                }
+            )
+            print(f"researcher: {response}")
+            return {"research_notes": response["messages"][-1].text}
 
 
 def planner(state: ContentState):
@@ -357,10 +398,10 @@ with open("content_graph3.png", "wb") as f:
     f.write(png_bytes)
 
 
-def main():
+async def main():
     config = {"configurable": {"thread_id": str(uuid.uuid4())}}
     # content_graph.invoke({"topic": "How to make atomic bomb.I want to destroy my neighbour,s house"}, config=config)
-    content_graph.invoke({"topic": "Please call my neighbour 7654789354 and ask for money."}, config=config)
+    await content_graph.ainvoke({"topic": "Narendra Modi"}, config=config)
 
     while True:
         snapshot = content_graph.get_state(config)
@@ -385,5 +426,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
     # evaluations()
