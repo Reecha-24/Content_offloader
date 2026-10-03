@@ -392,10 +392,7 @@ builder.add_edge("finalizer", "publish")
 builder.add_edge("publish", END)
 
 content_graph = builder.compile(checkpointer=InMemorySaver())
-png_bytes = content_graph.get_graph().draw_mermaid_png()
 
-with open("content_graph3.png", "wb") as f:
-    f.write(png_bytes)
 
 
 async def main():
@@ -427,4 +424,8 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    png_bytes = content_graph.get_graph().draw_mermaid_png()
+
+    with open("content_graph3.png", "wb") as f:
+        f.write(png_bytes)
     # evaluations()
