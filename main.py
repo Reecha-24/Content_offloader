@@ -11,9 +11,14 @@ from dotenv import load_dotenv
 from langsmith import Client
 import uuid
 from openevals.llm import create_llm_as_judge
+from openai import OpenAI
+from presidio_analyzer import AnalyzerEngine
+from presidio_anonymizer import AnonymizerEngine
+from presidio_analyzer.nlp_engine import SpacyNlpEngine
+from presidio_anonymizer.entities import OperatorConfig
 
 load_dotenv()
-
+oa=OpenAI()
 MAX_ITER = int(os.getenv("MAX_ITERATIONS", 3))
 
 langsmith_client = Client()
@@ -38,6 +43,7 @@ class HumanApproval(TypedDict):
 
 class ContentState(TypedDict):
     topic: str
+    initial_route:str
     research_notes: str
     plan: List[Plan]
     markdown_content: str
@@ -147,7 +153,54 @@ llm = get_llm()
 
 
 def initial_validation(state: ContentState):
-    print("Topic length seems good")
+    topic=state.get("topic")
+
+    resp = oa.moderations.create(
+    model="omni-moderation-latest",
+    input=topic,
+    )
+
+    result = resp.results[0]
+    print(f"validation_result : {result}")
+    if result.flagged:
+        return {"initial_route":"__end__"}
+    else:
+
+        nlp_engine = SpacyNlpEngine(
+            models=[{"lang_code": "en", "model_name": "en_core_web_sm"}]
+        )
+
+        analyzer = AnalyzerEngine(nlp_engine=nlp_engine, supported_languages=["en"])
+
+        # Call analyzer to get results
+        results = analyzer.analyze(text=topic,
+                                language='en',
+                                entities=[
+                                        "EMAIL_ADDRESS",
+                                        "PHONE_NUMBER",
+                                        "CREDIT_CARD",
+                                        "IBAN_CODE",
+                                        "US_SSN",
+                                        "IP_ADDRESS",
+                                    ]
+                                )
+        print(f"analyser result : {results}")
+
+        # Analyzer results are passed to the AnonymizerEngine for anonymization
+
+        anonymizer = AnonymizerEngine()
+
+        anonymized_text = anonymizer.anonymize(text=topic,analyzer_results=results,operators={"DEFAULT": OperatorConfig("mask", {
+                "masking_char": "*",
+                "chars_to_mask": 12,
+                "from_end": False,   # False = mask from the start
+            })})
+
+        print(f"Anomized text result : {anonymized_text}")
+        return {"initial_route":"researcher","topic":anonymized_text.text}
+
+def initial_route_to_end(state:ContentState)->Literal["researcher","__end__"]:
+    return state.get("initial_route")
 
 
 @tool
@@ -288,8 +341,8 @@ builder.add_node("human_approval", human_approval)
 builder.add_node("finalizer", finalizer)
 builder.add_node("publish", publish)
 
-builder.add_edge(START, "initial_validation")
-builder.add_edge("initial_validation", "researcher")
+builder.add_edge(START,"initial_validation")
+builder.add_conditional_edges("initial_validation",initial_route_to_end,{"researcher":"researcher","__end__":END})
 builder.add_edge("researcher", "planner")
 builder.add_edge("planner", "writer")
 builder.add_edge("writer", "editor")
@@ -298,15 +351,16 @@ builder.add_edge("finalizer", "publish")
 builder.add_edge("publish", END)
 
 content_graph = builder.compile(checkpointer=InMemorySaver())
-# png_bytes = content_graph.get_graph().draw_mermaid_png()
+png_bytes = content_graph.get_graph().draw_mermaid_png()
 
-# with open("content_graph.png", "wb") as f:
-#     f.write(png_bytes)
+with open("content_graph3.png", "wb") as f:
+    f.write(png_bytes)
 
 
 def main():
-    config = {"configurable": {"thread_id": "001"}}
-    content_graph.invoke({"topic": "langgraph and langchain"}, config=config)
+    config = {"configurable": {"thread_id": str(uuid.uuid4())}}
+    # content_graph.invoke({"topic": "How to make atomic bomb.I want to destroy my neighbour,s house"}, config=config)
+    content_graph.invoke({"topic": "Please call my neighbour 7654789354 and ask for money."}, config=config)
 
     while True:
         snapshot = content_graph.get_state(config)
@@ -331,5 +385,5 @@ def main():
 
 
 if __name__ == "__main__":
-    # main()
-    evaluations()
+    main()
+    # evaluations()
